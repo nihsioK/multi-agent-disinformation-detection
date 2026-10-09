@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claim Check</title>
+<script>
+  (function () {
+    var saved = null;
+    try { saved = localStorage.getItem("theme"); } catch (e) {}
+    var system = window.matchMedia("(prefers-color-scheme: dark)");
+    document.documentElement.dataset.theme = saved || (system.matches ? "dark" : "light");
+    system.addEventListener("change", function (e) {
+      try { if (localStorage.getItem("theme")) return; } catch (err) {}
+      document.documentElement.dataset.theme = e.matches ? "dark" : "light";
+    });
+  })();
+</script>
+<style>
+:root {
+  color-scheme: light;
+  --bg: #f6f6f7; --panel: #ffffff; --fg: #1b1b20; --fg-2: #5d5d67; --fg-3: #9a9aa4;
+  --line: #e5e5e9; --line-soft: #efeff2; --accent: #1b1b20; --on-accent: #ffffff; --focus: #3b6fd6;
+  --ok: #1f7a4d; --err: #c0392b; --warn: #b26b0b; --bar: #d6d6db; --bar-strong: #1b1b20;
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0f0f12; --panel: #16161b; --fg: #ebebf0; --fg-2: #a4a4ad; --fg-3: #6f6f79;
+  --line: #27272e; --line-soft: #1e1e24; --accent: #ebebf0; --on-accent: #0f0f12; --focus: #6f9cf5;
+  --ok: #4cc38a; --err: #ef6f66; --warn: #d9a441; --bar: #35353e; --bar-strong: #ebebf0;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; min-height: 100%; }
+body { background: var(--bg); color: var(--fg); font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif; -webkit-font-smoothing: antialiased; }
+a { color: var(--fg-2); text-decoration: none; border-bottom: 1px solid var(--line); }
+a:hover { color: var(--fg); border-color: var(--fg-3); }
+.mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; }
+.muted { color: var(--fg-3); }
+
+.top { height: 52px; display: flex; align-items: center; gap: 16px; padding: 0 20px; border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 2; }
+.brand { font-weight: 600; letter-spacing: -0.01em; white-space: nowrap; }
+.brand small { font-weight: 400; color: var(--fg-3); margin-left: 10px; }
+.controls { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+.field { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--fg-2); }
+select, input, textarea { font: inherit; color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; }
+select:focus, input:focus, textarea:focus { outline: none; border-color: var(--focus); box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 18%, transparent); }
+.icon-btn { width: 32px; height: 32px; display: inline-grid; place-items: center; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--fg-2); cursor: pointer; }
+.icon-btn:hover { color: var(--fg); }
+.icon-btn svg { width: 16px; height: 16px; }
+:root[data-theme="dark"] .only-light, :root[data-theme="light"] .only-dark { display: none; }
+
+.layout { display: grid; grid-template-columns: 340px minmax(0, 1fr); min-height: calc(100vh - 52px); }
+@media (max-width: 900px) { .layout { grid-template-columns: 1fr; } .side { border-right: 0; border-bottom: 1px solid var(--line); } }
+.side { border-right: 1px solid var(--line); background: var(--panel); padding: 22px 20px 32px; display: flex; flex-direction: column; gap: 30px; }
+.main { padding: 30px 40px 60px; max-width: 1000px; }
+
+h2 { font-size: 13px; font-weight: 600; margin: 0; }
+.head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--line); margin-bottom: 12px; }
+.head span { font-size: 12px; color: var(--fg-3); }
+.section { margin-top: 34px; }
+
+label { display: block; font-size: 12px; color: var(--fg-2); margin: 12px 0 4px; }
+textarea { width: 100%; min-height: 96px; resize: vertical; }
+input.wide { width: 100%; }
+.btn { font: inherit; font-weight: 500; background: var(--accent); color: var(--on-accent); border: 0; border-radius: 6px; padding: 8px 14px; cursor: pointer; }
+.btn:disabled { opacity: 0.5; cursor: default; }
+.form-foot { display: flex; align-items: center; gap: 12px; margin-top: 14px; }
+.error { color: var(--err); font-size: 12px; }
+.hint { font-size: 12px; color: var(--fg-3); }
+.hint.warn { color: var(--warn); }
+
+.list { display: flex; flex-direction: column; }
+.item { text-align: left; background: none; border: 0; border-top: 1px solid var(--line-soft); padding: 10px 0; cursor: pointer; color: var(--fg); font: inherit; line-height: 1.45; display: grid; gap: 3px; }
+.item:last-child { border-bottom: 1px solid var(--line-soft); }
+.item:hover { color: var(--fg-2); }
+.item .meta { font-size: 12px; color: var(--fg-3); display: flex; gap: 10px; flex-wrap: wrap; }
+.item .meta b { color: var(--fg-2); font-weight: 500; }
+.empty { color: var(--fg-3); font-size: 13px; padding: 10px 0; }
+
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--fg-3); vertical-align: middle; margin-right: 6px; }
+.dot.completed, .dot.done { background: var(--ok); }
+.dot.failed, .dot.timed_out, .dot.error { background: var(--err); }
+.dot.running, .dot.queued, .dot.working { background: var(--warn); animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: 0.25; } }
+
+.statement { font-size: 19px; line-height: 1.4; font-weight: 500; letter-spacing: -0.005em; margin: 0 0 10px; }
+.meta-row { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 12px; color: var(--fg-3); align-items: center; }
+.meta-row .status { color: var(--fg); font-weight: 500; }
+.alert { margin-top: 14px; padding: 10px 12px; border-left: 2px solid var(--err); color: var(--fg-2); font-size: 13px; background: var(--panel); }
+
+.pipeline { display: flex; align-items: stretch; gap: 10px; }
+.node { flex: 1; min-width: 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+.node .name { font-weight: 600; font-size: 13px; }
+.node .role { font-size: 12px; color: var(--fg-3); margin-top: 2px; }
+.node .state { font-size: 12px; margin-top: 10px; color: var(--fg-2); }
+.arrow { align-self: center; color: var(--fg-3); font-size: 16px; }
+@media (max-width: 700px) { .pipeline { flex-direction: column; } .arrow { transform: rotate(90deg); text-align: center; } }
+
+.kv { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 7px 18px; font-size: 13px; margin: 0; }
+.kv dt { color: var(--fg-3); }
+.kv dd { margin: 0; overflow-wrap: anywhere; }
+.thesis { font-size: 15px; line-height: 1.5; margin: 0 0 14px; }
+.verdict { display: flex; align-items: baseline; gap: 14px; margin-bottom: 16px; flex-wrap: wrap; }
+.verdict .label.muted { color: var(--fg-3); font-weight: 500; }
+.verdict .label { font-size: 24px; font-weight: 600; letter-spacing: -0.01em; }
+.verdict .conf { color: var(--fg-2); }
+.bars { display: grid; grid-template-columns: 110px minmax(0, 1fr) 56px; gap: 9px 14px; align-items: center; font-size: 13px; }
+.track { position: relative; height: 6px; background: var(--line-soft); border-radius: 3px; }
+.fill { position: absolute; left: 0; top: 0; height: 100%; background: var(--bar); border-radius: 3px; min-width: 2px; }
+.fill.top { background: var(--bar-strong); }
+.tick { position: absolute; top: -5px; bottom: -5px; border-left: 1px solid var(--fg-3); }
+.tick-label { font-size: 11px; color: var(--fg-3); position: absolute; top: -18px; transform: translateX(-50%); }
+.num { text-align: right; font-variant-numeric: tabular-nums; color: var(--fg-2); }
+.note { margin: 0 0 12px; padding-left: 10px; border-left: 2px solid var(--warn); font-size: 13px; color: var(--fg-2); }
+.foot { font-size: 12px; color: var(--fg-3); margin: 12px 0 0; }
+
+table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+th { text-align: left; font-weight: 500; color: var(--fg-3); padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+td { padding: 6px 8px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+tr:hover td { background: var(--line-soft); }
+td.ok { color: var(--ok); } td.error { color: var(--err); }
+td.num { color: var(--fg-2); }
+
+details { margin-top: 12px; }
+summary { font-size: 12px; color: var(--fg-3); cursor: pointer; user-select: none; }
+summary:hover { color: var(--fg-2); }
+pre { margin: 8px 0 0; padding: 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; overflow: auto; max-height: 320px; font: 12px/1.5 ui-monospace, "SF Mono", Menlo, monospace; }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand">Claim Check <small>analyst → classifier</small></div>
+  <div class="controls">
+    <label class="field">Модель OpenRouter <input id="model" list="models" placeholder="по умолчанию" style="width:260px"><datalist id="models"></datalist></label>
+    <button class="icon-btn" id="theme" type="button" aria-label="Переключить тему" title="Переключить тему">
+      <svg class="only-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+      <svg class="only-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+    </button>
+  </div>
+</header>
+<div class="layout">
+  <aside class="side">
+    <form id="form">
+      <div class="head"><h2>Новая проверка</h2><span id="provider-state"></span></div>
+      <textarea id="statement" required maxlength="2000" placeholder="Political statement in English"></textarea>
+      <label for="speaker">Спикер <span class="muted">· ищется в истории LIAR</span></label>
+      <input class="wide" id="speaker" placeholder="Donald Trump">
+      <label for="context">Контекст</label>
+      <input class="wide" id="context" placeholder="a speech in Phoenix, Ariz.">
+      <div class="form-foot"><button class="btn" id="run" type="submit">Запустить</button><span class="error" id="form-error"></span></div>
+    </form>
+    <section>
+      <div class="head"><h2>Примеры</h2><span>LIAR test, с эталонной меткой</span></div>
+      <div class="list" id="examples"></div>
+    </section>
+    <section>
+      <div class="head"><h2>Запуски</h2><span id="runs-count"></span></div>
+      <div class="list" id="history"><div class="empty">Пока нет запусков.</div></div>
+    </section>
+  </aside>
+  <main class="main" id="view"><p class="empty">Выберите пример слева или введите утверждение.</p></main>
+</div>
+<script>
+const EXAMPLES = [
+  {gold: "true", speaker: "Hillary Clinton", context: "a speech in Des Moines, Iowa.", statement: "Each year, 18,000 people die in America because they don't have health care."},
+  {gold: "pants-fire", speaker: "Donald Trump", context: "a speech in Phoenix, Ariz.", statement: "The number of illegal immigrants could be 3 million. It could be 30 million."},
+  {gold: "false", speaker: "Barack Obama", context: "Las Vegas", statement: "Right now, an employer has more of a chance of getting hit by lightning than be prosecuted for hiring an undocumented worker. That has to change."},
+  {gold: "half-true", speaker: "Hillary Clinton", context: "a debate in Manchester, N.H.", statement: "You said you would vote against the Patriot Act, then you came to the Senate, you voted for it."},
+];
+const LABELS = ["pants-fire", "false", "barely-true", "half-true", "mostly-true", "true"];
+const AGENTS = [
+  ["runner", "Runner", "запускает агентов по очереди, следит за лимитами · обычный код"],
+  ["analyst", "Analyst", "LLM · Claim → Analysis"],
+  ["classifier", "Classifier", "история LIAR + модель диплома · Analysis → Prediction"],
+];
+const STATE_TEXT = {idle: "ожидает", working: "работает", done: "готово", error: "ошибка"};
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+const fmtTs = ts => ts ? new Date(ts).toLocaleTimeString() : "";
+const pct = x => Math.round(100 * x) + " %";
+const dash = v => v ? esc(v) : "—";
+let timer = null;
+
+$("#theme").addEventListener("click", () => {
+  const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem("theme", next); } catch (e) {}
+});
+
+async function api(path, options) {
+  const response = await fetch("/api" + path, options);
+  if (!response.ok) {
+    let message = response.statusText;
+    try { const body = await response.json(); message = Array.isArray(body.detail) ? body.detail.map(d => d.msg).join("; ") : body.detail || message; } catch (e) {}
+    throw new Error(message);
+  }
+  return response.json();
+}
+
+async function loadConfig() {
+  const c = await api("/config");
+  $("#models").innerHTML = c.suggestions.map(m => `<option value="${esc(m)}">`).join("");
+  $("#model").placeholder = c.model;
+  const state = $("#provider-state");
+  state.className = c.configured ? "hint" : "hint warn";
+  state.textContent = c.configured ? "OPENROUTER_API_KEY задан" : "нет OPENROUTER_API_KEY";
+}
+
+$("#examples").innerHTML = EXAMPLES.map((e, i) => `<button type="button" class="item" data-i="${i}"><span>${esc(e.statement)}</span><span class="meta"><b>${esc(e.speaker)}</b><span>эталон LIAR: ${e.gold}</span></span></button>`).join("");
+$("#examples").addEventListener("click", event => {
+  const button = event.target.closest(".item"); if (!button) return;
+  const e = EXAMPLES[button.dataset.i];
+  $("#statement").value = e.statement; $("#speaker").value = e.speaker; $("#context").value = e.context;
+  $("#statement").focus();
+});
+
+$("#form").addEventListener("submit", async event => {
+  event.preventDefault();
+  $("#form-error").textContent = ""; $("#run").disabled = true;
+  try {
+    const body = {statement: $("#statement").value, speaker: $("#speaker").value, context: $("#context").value,
+                  model: $("#model").value || null};
+    const {run_id} = await api("/runs", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+    watch(run_id);
+  } catch (error) { $("#form-error").textContent = error.message; }
+  finally { $("#run").disabled = false; }
+});
+
+async function loadHistory() {
+  const runs = await api("/runs?limit=20");
+  $("#runs-count").textContent = runs.length ? `${runs.length} последних` : "";
+  $("#history").innerHTML = runs.length ? runs.map(r => `<button type="button" class="item" data-id="${r.run_id}"><span><span class="dot ${r.status}"></span>${esc(r.request.statement.slice(0, 80))}${r.request.statement.length > 80 ? "…" : ""}</span><span class="meta"><span>${fmtTs(r.created_at)}</span><span>${esc(r.model)}</span>${r.result?.prediction ? `<b>${esc(r.result.prediction.label)}</b>` : ""}</span></button>`).join("") : '<div class="empty">Пока нет запусков.</div>';
+}
+$("#history").addEventListener("click", event => { const item = event.target.closest(".item[data-id]"); if (item) watch(item.dataset.id); });
+
+async function watch(runId) {
+  clearInterval(timer);
+  const tick = async () => {
+    const data = await api("/runs/" + runId);
+    render(data);
+    if (!["queued", "running"].includes(data.run.status)) { clearInterval(timer); loadHistory(); }
+  };
+  await tick();
+  timer = setInterval(() => tick().catch(() => clearInterval(timer)), 700);
+}
+
+function agentStates(events) {
+  const state = Object.fromEntries(AGENTS.map(([id]) => [id, "idle"]));
+  for (const e of events) {
+    if (e.kind === "run") state.runner = e.status === "error" ? "error" : (e.name === "finished" ? "done" : "working");
+    if (e.kind === "step") state[e.name] = {started: "working", finished: "done", error: "error"}[e.status];
+  }
+  return state;
+}
+
+function section(title, meta, body) {
+  return `<section class="section"><div class="head"><h2>${title}</h2><span>${meta || ""}</span></div>${body}</section>`;
+}
+
+function render({run, events, workload}) {
+  const analysis = run.result?.analysis, prediction = run.result?.prediction, state = agentStates(events);
+  const gold = EXAMPLES.find(e => e.statement === run.request.statement)?.gold;
+  const traceUrl = events.find(e => e.kind === "run" && e.name === "started")?.payload?.trace_url;
+  $("#view").innerHTML = `
+    <p class="statement">${esc(run.request.statement)}</p>
+    <div class="meta-row">
+      <span class="status"><span class="dot ${run.status}"></span>${run.status}</span>
+      ${run.request.speaker ? `<span>${esc(run.request.speaker)}</span>` : ""}
+      ${gold ? `<span>эталон LIAR: ${gold}</span>` : ""}
+      <span class="mono">${esc(run.run_id)}</span>
+      <span>${esc(run.provider)} : ${esc(run.model)}</span>
+      <span>${fmtTs(run.created_at)}</span>
+      <a href="/api/runs/${run.run_id}/events.jsonl" target="_blank">events.jsonl</a>
+      ${traceUrl ? `<a href="${esc(traceUrl)}" target="_blank" rel="noopener">Langfuse</a>` : ""}
+    </div>
+    ${run.error ? `<div class="alert">${esc(run.error)}</div>` : ""}
+    ${section("Агенты", "раннер запускает агентов по очереди", `<div class="pipeline">${AGENTS.map(([id, name, role], i) => `${i ? '<span class="arrow">→</span>' : ""}<div class="node"><div class="name">${name}</div><div class="role">${role}</div><div class="state"><span class="dot ${state[id]}"></span>${STATE_TEXT[state[id]]}</div></div>`).join("")}</div>`)}
+    ${analysis ? analysisSection(analysis) : ""}
+    ${prediction ? predictionSection(prediction, gold) : ""}
+    ${workload.total_calls ? workloadSection(workload) : ""}
+    ${eventsSection(events)}`;
+}
+
+function analysisSection(f) {
+  const list = items => items.length ? items.map(esc).join(" · ") : "—";
+  return section("Analysis", `${esc(f.sender)} → ${esc(f.recipient)} · ${esc(f.message_id)}`, `
+    <p class="thesis">${esc(f.thesis)}</p>
+    <dl class="kv">
+      <dt>checkable</dt><dd>${f.checkable ? "да" : "нет"}</dd>
+      <dt>entities</dt><dd>${list(f.entities)}</dd>
+      <dt>subject</dt><dd>${dash(f.subject)}</dd>
+      <dt>speaker</dt><dd>${dash(f.speaker)}</dd>
+      <dt>context</dt><dd>${dash(f.context)}</dd>
+      <dt>date · location</dt><dd>${dash(f.date)} · ${dash(f.location)}</dd>
+      <dt>search_queries</dt><dd>${list(f.search_queries)}</dd>
+      ${f.notes ? `<dt>notes</dt><dd>${esc(f.notes)}</dd>` : ""}
+    </dl>
+    <details><summary>JSON сообщения</summary><pre>${esc(JSON.stringify(f, null, 2))}</pre></details>`);
+}
+
+function predictionSection(a, gold) {
+  const m = a.metadata, counts = m.counts || {};
+  const bars = LABELS.map(label => { const p = a.probabilities[label] || 0; return `<span>${label}</span><div class="track"><div class="fill ${label === a.label ? "top" : ""}" style="width:${(100 * p).toFixed(1)}%"></div></div><span class="num">${pct(p)}</span>`; }).join("");
+  const caveat = a.applicable ? "" : `<p class="note">Утверждение вне области модели: она обучена на американских политических заявлениях и не знает фактов, поэтому эта оценка не вердикт. Проверка по источникам появится со следующими агентами.</p>`;
+  return section("Prediction", `сигнал модели LIAR, не итоговый вердикт · ${esc(a.sender)} → ${esc(a.recipient)}`, `
+    ${caveat}
+    <div class="verdict"><span class="label${a.applicable ? "" : " muted"}">${esc(a.label)}</span><span class="conf">уверенность ${pct(a.confidence)}</span>${gold ? `<span class="muted">эталон LIAR: ${gold}</span>` : ""}</div>
+    <div class="bars">${bars}</div>
+    <dl class="kv" style="margin-top:18px">
+      <dt>вход модели</dt><dd>${esc(a.input_text)}</dd>
+      <dt>метаданные</dt><dd>speaker ${dash(m.speaker)} · party ${dash(m.party)} · job ${dash(m.job)} · state ${dash(m.state)} · subject ${dash(m.subject)}</dd>
+      <dt>история PolitiFact</dt><dd>${Object.keys(counts).length ? Object.entries(counts).map(([k, v]) => `${k} ${v}`).join(" · ") : "нет, используется нейтральный prior"}</dd>
+      <dt>checkpoint</dt><dd class="mono">${esc(a.checkpoint_version)}</dd>
+    </dl>
+    ${a.warnings.map(w => `<p class="note">${esc(w)}</p>`).join("")}
+    <details><summary>JSON сообщения</summary><pre>${esc(JSON.stringify(a, null, 2))}</pre></details>`);
+}
+
+function workloadSection(w) {
+  const rows = Object.keys(w.calls_by_agent).map(agent => `<span>${esc(agent)}</span><div class="track"><div class="fill" style="width:${(100 * w.shares[agent]).toFixed(1)}%"></div><div class="tick" style="left:${100 * w.threshold}%"></div></div><span class="num">${w.calls_by_agent[agent]} · ${pct(w.shares[agent])}</span>`).join("");
+  return section("Нагрузка", `вызовы LLM и инструментов · всего ${w.total_calls}`, `
+    <div class="bars" style="margin-top:20px"><span></span><div class="track" style="height:0;background:none"><span class="tick-label" style="left:${100 * w.threshold}%">порог 40 %</span></div><span></span>${rows}</div>
+    <p class="foot">Максимальная доля ${pct(w.max_share)}. Порог из ТЗ применяется к полной системе из пяти и более агентов.</p>`);
+}
+
+function eventsSection(events) {
+  const info = e => { const p = e.payload || {}; return [p.error, p.usage && `tokens ${p.usage.prompt_tokens} + ${p.usage.completion_tokens}`, p.label && `label ${p.label}`, p.found !== undefined && `found ${p.found}`, p.attempt > 1 && `repair attempt ${p.attempt}`, p.final_status && `→ ${p.final_status}`].filter(Boolean).join(" · "); };
+  return section("События", `${events.length} записей`, `<table><thead><tr><th>время</th><th>агент</th><th>тип</th><th>имя</th><th>статус</th><th>мс</th><th>детали</th></tr></thead><tbody>
+    ${events.map(e => `<tr><td class="mono">${fmtTs(e.ts)}</td><td>${esc(e.agent)}</td><td>${esc(e.kind)}</td><td>${esc(e.name)}</td><td class="${e.status}">${esc(e.status)}</td><td class="num">${e.duration_ms ?? ""}</td><td>${esc(info(e))}</td></tr>`).join("")}
+  </tbody></table>`);
+}
+
+loadConfig().catch(error => { $("#provider-state").textContent = error.message; });
+loadHistory().catch(() => {});
+</script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.env
+data/*.db
+data/*.db-*
+models/hybrid_liar/
+.DS_Store

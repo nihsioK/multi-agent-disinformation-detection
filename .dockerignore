@@ -1,0 +1,9 @@
+.git
+.venv
+.env
+.pytest_cache
+.ruff_cache
+__pycache__
+data/*.db
+data/*.db-*
+models/hybrid_liar
