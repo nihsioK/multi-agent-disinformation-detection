@@ -80,6 +80,7 @@ input.wide { width: 100%; }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--fg-3); vertical-align: middle; margin-right: 6px; }
 .dot.completed, .dot.done { background: var(--ok); }
 .dot.failed, .dot.timed_out, .dot.error { background: var(--err); }
+.dot.insufficient_evidence { background: var(--warn); }
 .dot.running, .dot.queued, .dot.working { background: var(--warn); animation: pulse 1.2s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: 0.25; } }
 
@@ -88,13 +89,11 @@ input.wide { width: 100%; }
 .meta-row .status { color: var(--fg); font-weight: 500; }
 .alert { margin-top: 14px; padding: 10px 12px; border-left: 2px solid var(--err); color: var(--fg-2); font-size: 13px; background: var(--panel); }
 
-.pipeline { display: flex; align-items: stretch; gap: 10px; }
+.pipeline { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
 .node { flex: 1; min-width: 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
 .node .name { font-weight: 600; font-size: 13px; }
 .node .role { font-size: 12px; color: var(--fg-3); margin-top: 2px; }
 .node .state { font-size: 12px; margin-top: 10px; color: var(--fg-2); }
-.arrow { align-self: center; color: var(--fg-3); font-size: 16px; }
-@media (max-width: 700px) { .pipeline { flex-direction: column; } .arrow { transform: rotate(90deg); text-align: center; } }
 
 .kv { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 7px 18px; font-size: 13px; margin: 0; }
 .kv dt { color: var(--fg-3); }
@@ -112,6 +111,9 @@ input.wide { width: 100%; }
 .tick-label { font-size: 11px; color: var(--fg-3); position: absolute; top: -18px; transform: translateX(-50%); }
 .num { text-align: right; font-variant-numeric: tabular-nums; color: var(--fg-2); }
 .note { margin: 0 0 12px; padding-left: 10px; border-left: 2px solid var(--warn); font-size: 13px; color: var(--fg-2); }
+.source { padding: 10px 0; border-top: 1px solid var(--line-soft); font-size: 13px; }
+.source .snippet { color: var(--fg-2); margin-top: 4px; }
+.checks { margin-top: 14px; font-size: 13px; display: grid; gap: 4px; }
 .foot { font-size: 12px; color: var(--fg-3); margin: 12px 0 0; }
 
 table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
@@ -129,7 +131,7 @@ pre { margin: 8px 0 0; padding: 12px; background: var(--bg); border: 1px solid v
 </head>
 <body>
 <header class="top">
-  <div class="brand">Claim Check <small>analyst → classifier</small></div>
+  <div class="brand">Claim Check <small>шесть агентов проверяют утверждение</small></div>
   <div class="controls">
     <label class="field">Модель OpenRouter <input id="model" list="models" placeholder="по умолчанию" style="width:260px"><datalist id="models"></datalist></label>
     <button class="icon-btn" id="theme" type="button" aria-label="Переключить тему" title="Переключить тему">
@@ -169,9 +171,13 @@ const EXAMPLES = [
 ];
 const LABELS = ["pants-fire", "false", "barely-true", "half-true", "mostly-true", "true"];
 const AGENTS = [
-  ["runner", "Runner", "запускает агентов по очереди, следит за лимитами · обычный код"],
+  ["runner", "Runner", "очередь агентов, лимиты, статусы · обычный код"],
   ["analyst", "Analyst", "LLM · Claim → Analysis"],
+  ["retriever", "Retriever", "веб-поиск, кэш · Analysis → Evidence"],
   ["classifier", "Classifier", "история LIAR + модель диплома · Analysis → Prediction"],
+  ["assessor", "Assessor", "LLM + правила доменов · Evidence → Assessment"],
+  ["synthesizer", "Synthesizer", "LLM, цитаты по id · → Draft"],
+  ["verifier", "Verifier", "правила, без LLM · Draft → pass / revise"],
 ];
 const STATE_TEXT = {idle: "ожидает", working: "работает", done: "готово", error: "ошибка"};
 const $ = s => document.querySelector(s);
@@ -229,7 +235,7 @@ $("#form").addEventListener("submit", async event => {
 async function loadHistory() {
   const runs = await api("/runs?limit=20");
   $("#runs-count").textContent = runs.length ? `${runs.length} последних` : "";
-  $("#history").innerHTML = runs.length ? runs.map(r => `<button type="button" class="item" data-id="${r.run_id}"><span><span class="dot ${r.status}"></span>${esc(r.request.statement.slice(0, 80))}${r.request.statement.length > 80 ? "…" : ""}</span><span class="meta"><span>${fmtTs(r.created_at)}</span><span>${esc(r.model)}</span>${r.result?.prediction ? `<b>${esc(r.result.prediction.label)}</b>` : ""}</span></button>`).join("") : '<div class="empty">Пока нет запусков.</div>';
+  $("#history").innerHTML = runs.length ? runs.map(r => `<button type="button" class="item" data-id="${r.run_id}"><span><span class="dot ${r.status}"></span>${esc(r.request.statement.slice(0, 80))}${r.request.statement.length > 80 ? "…" : ""}</span><span class="meta"><span>${fmtTs(r.created_at)}</span><span>${esc(r.model)}</span>${r.result?.draft ? `<b>${esc(r.result.draft.verdict)}</b>` : r.result?.prediction ? `<b>${esc(r.result.prediction.label)}</b>` : ""}</span></button>`).join("") : '<div class="empty">Пока нет запусков.</div>';
 }
 $("#history").addEventListener("click", event => { const item = event.target.closest(".item[data-id]"); if (item) watch(item.dataset.id); });
 
@@ -258,7 +264,7 @@ function section(title, meta, body) {
 }
 
 function render({run, events, workload}) {
-  const analysis = run.result?.analysis, prediction = run.result?.prediction, state = agentStates(events);
+  const r = run.result || {}, state = agentStates(events);
   const gold = EXAMPLES.find(e => e.statement === run.request.statement)?.gold;
   const traceUrl = events.find(e => e.kind === "run" && e.name === "started")?.payload?.trace_url;
   $("#view").innerHTML = `
@@ -274,11 +280,44 @@ function render({run, events, workload}) {
       ${traceUrl ? `<a href="${esc(traceUrl)}" target="_blank" rel="noopener">Langfuse</a>` : ""}
     </div>
     ${run.error ? `<div class="alert">${esc(run.error)}</div>` : ""}
-    ${section("Агенты", "раннер запускает агентов по очереди", `<div class="pipeline">${AGENTS.map(([id, name, role], i) => `${i ? '<span class="arrow">→</span>' : ""}<div class="node"><div class="name">${name}</div><div class="role">${role}</div><div class="state"><span class="dot ${state[id]}"></span>${STATE_TEXT[state[id]]}</div></div>`).join("")}</div>`)}
-    ${analysis ? analysisSection(analysis) : ""}
-    ${prediction ? predictionSection(prediction, gold) : ""}
+    ${section("Агенты", "analyst → retriever ∥ classifier → assessor → synthesizer → verifier", `<div class="pipeline">${AGENTS.map(([id, name, role]) => `<div class="node"><div class="name">${name}</div><div class="role">${role}</div><div class="state"><span class="dot ${state[id]}"></span>${STATE_TEXT[state[id]]}</div></div>`).join("")}</div>`)}
+    ${r.draft ? verdictSection(r.draft, r.verification, r.evidence) : ""}
+    ${r.analysis ? analysisSection(r.analysis) : ""}
+    ${r.evidence ? evidenceSection(r.evidence, r.assessment) : ""}
+    ${r.prediction ? predictionSection(r.prediction, gold) : ""}
     ${workload.total_calls ? workloadSection(workload) : ""}
     ${eventsSection(events)}`;
+}
+
+function verdictSection(d, v, ev) {
+  const items = Object.fromEntries((ev?.items || []).map(i => [i.evidence_id, i]));
+  const cites = d.evidence_ids.map(id => items[id] ? `<a href="${esc(items[id].url)}" target="_blank" rel="noopener">${esc(id)} · ${esc(items[id].domain)}</a>` : esc(id)).join(" · ") || "—";
+  const checks = (v?.checks || []).map(c => `<div><span class="dot ${c.passed ? "done" : (c.blocking ? "error" : "working")}"></span>${esc(c.name)} · ${esc(c.detail)}</div>`).join("");
+  return section("Вердикт", `synthesizer → verifier · ревизия ${d.revision} · проверка: ${esc(v?.status || "—")}`, `
+    <div class="verdict"><span class="label">${esc(d.verdict)}</span><span class="conf">уверенность ${pct(d.confidence)}</span></div>
+    <p class="thesis">${esc(d.rationale)}</p>
+    <dl class="kv">
+      <dt>источники</dt><dd>${cites}</dd>
+      ${d.conflicts ? `<dt>расхождения</dt><dd>${esc(d.conflicts)}</dd>` : ""}
+      ${d.limitations ? `<dt>ограничения</dt><dd>${esc(d.limitations)}</dd>` : ""}
+    </dl>
+    ${checks ? `<div class="checks">${checks}</div>` : ""}
+    <details><summary>JSON сообщений</summary><pre>${esc(JSON.stringify({draft: d, verification: v}, null, 2))}</pre></details>`);
+}
+
+function evidenceSection(ev, as) {
+  const views = Object.fromEntries((as?.items || []).map(a => [a.evidence_id, a]));
+  const domains = as ? as.independent_domains : new Set(ev.items.map(i => i.domain)).size;
+  const rows = ev.items.map(i => {
+    const a = views[i.evidence_id];
+    return `<div class="source"><div><b>${esc(i.evidence_id)}</b> <a href="${esc(i.url)}" target="_blank" rel="noopener">${esc(i.title || i.url)}</a> <span class="muted">${esc(i.domain)}</span></div>
+      ${a ? `<div class="muted">${esc(a.stance)} · relevance ${a.relevance.toFixed(2)} · reliability ${a.reliability.toFixed(2)} · ${esc(a.reasons)}</div>` : ""}
+      <div class="snippet">${esc(i.snippet)}</div></div>`;
+  }).join("");
+  return section("Источники", `retriever → assessor · ${esc(ev.backend)} · найдено ${ev.items.length}, независимых доменов ${domains}`, `
+    ${ev.note ? `<p class="note">${esc(ev.note)}</p>` : ""}
+    ${rows || '<p class="empty">Ничего не найдено.</p>'}
+    <details><summary>JSON сообщений</summary><pre>${esc(JSON.stringify({evidence: ev, assessment: as}, null, 2))}</pre></details>`);
 }
 
 function analysisSection(f) {
@@ -301,7 +340,7 @@ function analysisSection(f) {
 function predictionSection(a, gold) {
   const m = a.metadata, counts = m.counts || {};
   const bars = LABELS.map(label => { const p = a.probabilities[label] || 0; return `<span>${label}</span><div class="track"><div class="fill ${label === a.label ? "top" : ""}" style="width:${(100 * p).toFixed(1)}%"></div></div><span class="num">${pct(p)}</span>`; }).join("");
-  const caveat = a.applicable ? "" : `<p class="note">Утверждение вне области модели: она обучена на американских политических заявлениях и не знает фактов, поэтому эта оценка не вердикт. Проверка по источникам появится со следующими агентами.</p>`;
+  const caveat = a.applicable ? "" : `<p class="note">Утверждение вне области модели: она обучена на американских политических заявлениях и не знает фактов, поэтому эта оценка не вердикт. Итоговый вердикт строится по источникам, см. раздел «Вердикт».</p>`;
   return section("Prediction", `сигнал модели LIAR, не итоговый вердикт · ${esc(a.sender)} → ${esc(a.recipient)}`, `
     ${caveat}
     <div class="verdict"><span class="label${a.applicable ? "" : " muted"}">${esc(a.label)}</span><span class="conf">уверенность ${pct(a.confidence)}</span>${gold ? `<span class="muted">эталон LIAR: ${gold}</span>` : ""}</div>
@@ -320,7 +359,7 @@ function workloadSection(w) {
   const rows = Object.keys(w.calls_by_agent).map(agent => `<span>${esc(agent)}</span><div class="track"><div class="fill" style="width:${(100 * w.shares[agent]).toFixed(1)}%"></div><div class="tick" style="left:${100 * w.threshold}%"></div></div><span class="num">${w.calls_by_agent[agent]} · ${pct(w.shares[agent])}</span>`).join("");
   return section("Нагрузка", `вызовы LLM и инструментов · всего ${w.total_calls}`, `
     <div class="bars" style="margin-top:20px"><span></span><div class="track" style="height:0;background:none"><span class="tick-label" style="left:${100 * w.threshold}%">порог 40 %</span></div><span></span>${rows}</div>
-    <p class="foot">Максимальная доля ${pct(w.max_share)}. Порог из ТЗ применяется к полной системе из пяти и более агентов.</p>`);
+    <p class="foot">Максимальная доля ${pct(w.max_share)} при пороге 40 % из ТЗ.</p>`);
 }
 
 function eventsSection(events) {

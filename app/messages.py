@@ -6,8 +6,10 @@ from pydantic import BaseModel, Field, field_validator
 
 from app import config
 
-SCHEMA_VERSION = "1.0"
-FINAL_STATUSES = ("completed", "failed", "timed_out")
+SCHEMA_VERSION = "1.1"
+FINAL_STATUSES = ("completed", "failed", "timed_out", "insufficient_evidence")
+Verdict = Literal["true", "mostly-true", "half-true", "mostly-false", "false", "unverifiable"]
+Stance = Literal["supports", "refutes", "mixed", "unrelated"]
 
 
 def now_iso() -> str:
@@ -87,7 +89,7 @@ class AnalystOutput(BaseModel):
 
 
 class Analysis(Message, AnalystOutput):
-    """Analyst -> classifier."""
+    """Analyst -> retriever and classifier."""
 
 
 class Prediction(Message):
@@ -103,3 +105,72 @@ class Prediction(Message):
     # False when the statement is outside the model's domain: the label is a signal, not a verdict
     applicable: bool = True
     warnings: list[str] = Field(default_factory=list)
+
+
+class EvidenceItem(BaseModel):
+    evidence_id: str
+    url: str
+    domain: str
+    title: str
+    published: str | None = None
+    snippet: str
+    content_hash: str
+    accessed_at: str
+
+
+class Evidence(Message):
+    """Retriever -> assessor: what the web search found, without any judgement."""
+
+    queries: list[str]
+    backend: str
+    items: list[EvidenceItem]
+    sufficient: bool  # at least two independent domains
+    note: str | None = None  # e.g. why the search came back empty
+
+
+class SourceAssessment(BaseModel):
+    evidence_id: str
+    relevance: float = Field(ge=0, le=1, description="How much the source says about the thesis itself")
+    reliability: float = Field(ge=0, le=1, description="How trustworthy the publisher is")
+    stance: Stance = Field(description="Does the source support or refute the thesis")
+    reasons: str = Field(description="One sentence")
+
+
+class AssessorOutput(BaseModel):
+    items: list[SourceAssessment]
+
+
+class Assessment(Message, AssessorOutput):
+    """Assessor -> synthesizer: one assessment per source, reliability blended with domain rules."""
+
+    independent_domains: int
+
+
+class SynthesizerOutput(BaseModel):
+    verdict: Verdict = Field(description="One of true, mostly-true, half-true, mostly-false, false, unverifiable")
+    confidence: float = Field(ge=0, le=1)
+    rationale: str = Field(description="3-6 sentences, cite sources by id like [E1]")
+    evidence_ids: list[str] = Field(description="Exactly the source ids the rationale relies on")
+    conflicts: str | None = Field(default=None, description="Disagreements between sources or with the model signal")
+    limitations: str | None = Field(default=None, description="What could not be checked")
+
+
+class Draft(Message, SynthesizerOutput):
+    """Synthesizer -> verifier."""
+
+    revision: int = 0
+
+
+class Check(BaseModel):
+    name: str
+    passed: bool
+    detail: str
+    blocking: bool = True
+
+
+class Verification(Message):
+    """Verifier -> runner: pass, or revise with the list of required fixes."""
+
+    status: Literal["pass", "revise"]
+    checks: list[Check]
+    required_fixes: list[str] = Field(default_factory=list)

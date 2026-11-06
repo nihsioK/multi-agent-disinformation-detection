@@ -67,9 +67,12 @@ class LLM:
         return text, info
 
     def structured(
-        self, run, agent: str, name: str, system: str, user: str, schema: type[BaseModel], attempts: int = 2
+        self, run, agent: str, name: str, system: str, user: str, schema: type[BaseModel], check=None, attempts: int = 2
     ):
-        """Ask for JSON matching `schema`; one repair round with the validation error, then a clean failure."""
+        """Ask for JSON matching `schema`; one repair round with the validation error, then a clean failure.
+
+        `check(parsed) -> str | None` adds a content check (e.g. unknown citation ids) that is repaired the same way.
+        """
         messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
         last_error = "no attempt made"
         for attempt in range(1, attempts + 1):
@@ -82,11 +85,15 @@ class LLM:
                 attempt=attempt,
             )
             try:
-                return schema.model_validate_json(extract_json(text))
+                parsed = schema.model_validate_json(extract_json(text))
+                problem = check(parsed) if check else None
+                if not problem:
+                    return parsed
+                last_error = problem
             except ValueError as error:  # pydantic.ValidationError is a ValueError too
                 last_error = str(error)[:800]
-                messages += [
-                    {"role": "assistant", "content": text},
-                    {"role": "user", "content": REPAIR_PROMPT.format(error=last_error)},
-                ]
+            messages += [
+                {"role": "assistant", "content": text},
+                {"role": "user", "content": REPAIR_PROMPT.format(error=last_error)},
+            ]
         raise RunError("failed", f"{agent}: LLM returned invalid JSON after {attempts} attempts: {last_error[:300]}")

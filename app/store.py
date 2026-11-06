@@ -1,6 +1,7 @@
 import json
 import sqlite3
 from contextlib import closing
+from datetime import UTC, datetime
 from pathlib import Path
 
 from app.messages import now_iso
@@ -15,6 +16,9 @@ CREATE TABLE IF NOT EXISTS events (
   name TEXT, status TEXT, duration_ms INTEGER, payload TEXT
 );
 CREATE INDEX IF NOT EXISTS events_run ON events(run_id);
+CREATE TABLE IF NOT EXISTS searches (
+  backend TEXT, query TEXT, fetched_at TEXT, results TEXT, PRIMARY KEY (backend, query)
+);
 """
 
 
@@ -92,6 +96,26 @@ class Store:
         for row in rows:
             row["payload"] = json.loads(row["payload"])
         return rows
+
+    def cached_search(self, query: str, backend: str | None, max_age_hours: float) -> list[dict] | None:
+        """Results of an earlier identical search; `backend=None` accepts any backend (offline replay)."""
+        rows = self._rows(
+            "SELECT backend, fetched_at, results FROM searches WHERE query=? AND (? IS NULL OR backend=?) "
+            "ORDER BY fetched_at DESC LIMIT 1",
+            (query, backend, backend),
+        )
+        if not rows:
+            return None
+        age_hours = (datetime.now(UTC) - datetime.fromisoformat(rows[0]["fetched_at"])).total_seconds() / 3600
+        if backend is not None and age_hours > max_age_hours:
+            return None
+        return json.loads(rows[0]["results"])
+
+    def save_search(self, backend: str, query: str, results: list[dict]) -> None:
+        self._write(
+            "INSERT OR REPLACE INTO searches(backend, query, fetched_at, results) VALUES (?,?,?,?)",
+            (backend, query, now_iso(), json.dumps(results, ensure_ascii=False)),
+        )
 
     def workload(self, run_id: str) -> dict:
         """Share of LLM + tool calls per agent (the <= 40 % rule is checked on this)."""

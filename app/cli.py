@@ -8,7 +8,7 @@ from app.llm import LLM, ConfigError
 from app.messages import Claim, new_id
 from app.runner import run_check
 from app.store import Store
-from app.tools import SpeakerHistory, get_model
+from app.tools import SpeakerHistory, WebSearch, get_model
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -17,6 +17,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--speaker")
     parser.add_argument("--context")
     parser.add_argument("--model", help="OpenRouter model id, default from LLM_MODEL")
+    parser.add_argument(
+        "--search", choices=["openrouter", "tavily", "cache"], help="search backend, default from SEARCH_BACKEND"
+    )
     parser.add_argument("--db", default=str(config.DB_PATH))
     args = parser.parse_args(argv)
     try:
@@ -40,6 +43,7 @@ def main(argv: list[str] | None = None) -> int:
         llm,
         SpeakerHistory(config.LIAR_TRAIN_TSV),
         lambda: get_model(config.HYBRID_CHECKPOINT),
+        WebSearch(args.search or config.SEARCH_BACKEND, store, llm),
         source="cli",
     )
     run = store.get_run(claim.run_id)

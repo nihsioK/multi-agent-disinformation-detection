@@ -10,7 +10,7 @@ from app.llm import LLM, MODEL_SUGGESTIONS, ConfigError
 from app.messages import Claim, ClaimInput, new_id
 from app.runner import TRACING, run_check
 from app.store import Store
-from app.tools import SpeakerHistory, get_model
+from app.tools import SpeakerHistory, WebSearch, get_model
 
 app = FastAPI(title="Claim Check", version="0.1.0")
 store = Store(config.DB_PATH)
@@ -38,6 +38,7 @@ def api_config() -> dict:
         "model": config.LLM_MODEL,
         "suggestions": list(MODEL_SUGGESTIONS),
         "configured": bool(os.environ.get("OPENROUTER_API_KEY")),
+        "search": config.SEARCH_BACKEND,
         "tracing": TRACING,
     }
 
@@ -57,7 +58,8 @@ def create_run(body: RunIn, background: BackgroundTasks) -> dict:
         context=body.context,
     )
     store.create_run(claim.run_id, claim.model_dump(), llm.provider, llm.model)
-    background.add_task(run_check, store, claim, llm, speakers, load_model, "web")
+    search = WebSearch(config.SEARCH_BACKEND, store, llm)
+    background.add_task(run_check, store, claim, llm, speakers, load_model, search, "web")
     return {"run_id": claim.run_id}
 
 

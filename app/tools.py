@@ -4,8 +4,12 @@ import html
 import math
 import re
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from urllib.parse import urlparse
 
+import httpx
 import torch
 import torch.nn as nn
 
@@ -25,6 +29,18 @@ LIAR_COLUMNS = [
 ]  # fmt: skip
 _URL = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
 _HTML = re.compile(r"<[^>]+>")
+
+# Baseline reliability by publisher; the assessor's LLM score is blended with this.
+RELIABLE_DOMAINS = {
+    "politifact.com": 0.9, "factcheck.org": 0.9, "snopes.com": 0.85, "apnews.com": 0.9, "reuters.com": 0.9,
+    "bbc.com": 0.85, "bbc.co.uk": 0.85, "npr.org": 0.85, "nytimes.com": 0.8, "washingtonpost.com": 0.8,
+    "wsj.com": 0.8, "theguardian.com": 0.8, "wikipedia.org": 0.75, "britannica.com": 0.8,
+    "cbo.gov": 0.9, "census.gov": 0.9, "cdc.gov": 0.9, "bls.gov": 0.9, "congress.gov": 0.9,
+}  # fmt: skip
+LOW_DOMAINS = {
+    "facebook.com": 0.2, "x.com": 0.2, "twitter.com": 0.2, "reddit.com": 0.25, "medium.com": 0.35,
+    "quora.com": 0.2, "youtube.com": 0.3, "tiktok.com": 0.2, "instagram.com": 0.2,
+}  # fmt: skip
 
 
 def clean_text(text: str) -> str:
@@ -179,3 +195,124 @@ class SpeakerHistory:
 
     def lookup(self, name: str | None) -> dict | None:
         return self.by_slug.get(slugify(name)) if name else None
+
+
+def domain_of(url: str) -> str:
+    host = (urlparse(url).netloc or "").lower()
+    return host[4:] if host.startswith("www.") else host
+
+
+def domain_reliability(domain: str) -> float:
+    """Baseline trust in a publisher from a short rule table; unknown publishers get 0.5."""
+    for table in (RELIABLE_DOMAINS, LOW_DOMAINS):
+        for known, score in table.items():
+            if domain == known or domain.endswith("." + known):
+                return score
+    if domain.endswith(".gov") or domain.endswith(".edu"):
+        return 0.85
+    return 0.5
+
+
+class WebSearch:
+    """Web search with a result cache in SQLite.
+
+    Backends: `openrouter` (the LLM gateway's web plugin, same key), `tavily` (TAVILY_API_KEY),
+    `cache` (offline replay of earlier searches, for demos without network).
+    """
+
+    def __init__(self, backend: str, store, llm=None, max_results: int = config.SEARCH_RESULTS) -> None:
+        self.backend, self.store, self.llm, self.max_results = backend, store, llm, max_results
+
+    def search(self, query: str) -> tuple[list[dict], bool]:
+        """Returns (results, from_cache); a result is {url, title, snippet, published}."""
+        cached = self.store.cached_search(
+            query, None if self.backend == "cache" else self.backend, config.SEARCH_CACHE_HOURS
+        )
+        if cached is not None:
+            return cached, True
+        if self.backend == "cache":
+            return [], False
+        results = self._tavily(query) if self.backend == "tavily" else self._openrouter(query)
+        self.store.save_search(self.backend, query, results)
+        return results, False
+
+    def _tavily(self, query: str) -> list[dict]:
+        import os
+
+        for attempt in range(3):  # retries only for the transient failures: timeouts, 429, 5xx
+            try:
+                response = httpx.post(
+                    "https://api.tavily.com/search",
+                    json={"query": query, "max_results": self.max_results, "search_depth": "basic"},
+                    headers={"Authorization": f"Bearer {os.environ.get('TAVILY_API_KEY', '')}"},
+                    timeout=config.SEARCH_TIMEOUT_S,
+                )
+                if response.status_code == 429 or response.status_code >= 500:
+                    raise httpx.HTTPStatusError("transient", request=response.request, response=response)
+                response.raise_for_status()
+                return [
+                    {
+                        "url": r["url"],
+                        "title": r.get("title", ""),
+                        "snippet": r.get("content", ""),
+                        "published": r.get("published_date"),
+                    }
+                    for r in response.json().get("results", [])
+                ]
+            except (httpx.TimeoutException, httpx.HTTPStatusError, httpx.TransportError):
+                if attempt == 2:
+                    raise
+                time.sleep(1.0 + attempt)
+        return []
+
+    def _openrouter(self, query: str) -> list[dict]:
+        if self.llm is None:
+            raise RuntimeError("openrouter search backend needs the LLM client")
+        response = self.llm.client.chat.completions.create(
+            model=config.SEARCH_MODEL,
+            messages=[
+                {"role": "system", "content": "You are a search assistant. Use web search and answer in one sentence."},
+                {"role": "user", "content": f"Find reliable web sources that discuss this claim: {query}"},
+            ],
+            extra_body={  # Exa returns the page excerpts in the citations; the native engines return links only
+                "plugins": [{"id": "web", "engine": "exa", "max_results": self.max_results}],
+                "usage": {"include": True},
+            },
+            name="search_web",
+            metadata={"agent": "retriever"},
+        )
+        message = response.choices[0].message
+        annotations = getattr(message, "annotations", None) or []
+        results, seen = [], set()
+        for annotation in annotations:
+            data = annotation.model_dump() if hasattr(annotation, "model_dump") else dict(annotation)
+            citation = data.get("url_citation") or data
+            url = citation.get("url")
+            if url and url not in seen:
+                seen.add(url)
+                results.append(
+                    {
+                        "url": url,
+                        "title": citation.get("title") or "",
+                        "snippet": citation.get("content") or "",
+                        "published": None,
+                    }
+                )
+        return results
+
+
+def check_links(urls: list[str]) -> dict[str, bool]:
+    """HEAD request per URL in parallel (GET on 405); unreachable links are reported, never retried."""
+    headers = {"User-Agent": "claim-check/0.1"}
+
+    def probe(url: str) -> bool:
+        try:
+            response = httpx.head(url, timeout=4, follow_redirects=True, headers=headers)
+            if response.status_code == 405:
+                response = httpx.get(url, timeout=4, follow_redirects=True, headers=headers)
+            return response.status_code < 400 or response.status_code in (401, 403)  # exists, but blocks bots
+        except httpx.HTTPError:
+            return False
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        return dict(zip(urls, pool.map(probe, urls), strict=True))

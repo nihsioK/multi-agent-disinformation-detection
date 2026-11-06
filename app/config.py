@@ -24,8 +24,15 @@ BASE_MODEL_DIR = Path(os.environ.get("BASE_MODEL_DIR", ROOT / "models/roberta-ba
 LIAR_TRAIN_TSV = Path(os.environ.get("LIAR_TRAIN_TSV", ROOT / "data/liar/train.tsv"))
 DB_PATH = Path(os.environ.get("DB_PATH", ROOT / "data/app.db"))
 
-RUN_TIMEOUT_S = float(os.environ.get("RUN_TIMEOUT_S", "120"))
+SEARCH_BACKEND = os.environ.get("SEARCH_BACKEND") or ("tavily" if os.environ.get("TAVILY_API_KEY") else "openrouter")
+SEARCH_RESULTS = int(os.environ.get("SEARCH_RESULTS", "5"))
+SEARCH_MODEL = os.environ.get("SEARCH_MODEL", "openai/gpt-5.4-nano")  # the web plugin call only needs the citations
+SEARCH_TIMEOUT_S = float(os.environ.get("SEARCH_TIMEOUT_S", "20"))
+SEARCH_CACHE_HOURS = float(os.environ.get("SEARCH_CACHE_HOURS", "24"))
+SNIPPET_CHARS = 600
+
+RUN_TIMEOUT_S = float(os.environ.get("RUN_TIMEOUT_S", "180"))
 LLM_TIMEOUT_S = float(os.environ.get("LLM_TIMEOUT_S", "45"))
 LLM_MAX_RETRIES = int(os.environ.get("LLM_MAX_RETRIES", "2"))
-MAX_STEPS = int(os.environ.get("MAX_STEPS", "8"))
+MAX_STEPS = int(os.environ.get("MAX_STEPS", "20"))
 MAX_STATEMENT_CHARS = 2000

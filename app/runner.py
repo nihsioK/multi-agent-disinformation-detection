@@ -1,15 +1,18 @@
 import os
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
+from contextvars import copy_context
 
 from langfuse import Langfuse, propagate_attributes
 
 from app import config
-from app.agents import Analyst, Classifier
+from app.agents import Analyst, Assessor, Classifier, Retriever, Synthesizer, Verifier
 from app.messages import Claim, RunError
 from app.store import Store
 
-STEPS = (Analyst.id, Classifier.id)
+STEPS = (Analyst.id, Retriever.id, Classifier.id, Assessor.id, Synthesizer.id, Verifier.id)
 TRACING = bool(os.environ.get("LANGFUSE_PUBLIC_KEY") and os.environ.get("LANGFUSE_SECRET_KEY"))
 tracer = Langfuse()  # disables itself (no-op observations) when the Langfuse keys are not set
 
@@ -27,6 +30,7 @@ class Run:
         self.max_steps = config.MAX_STEPS if max_steps is None else max_steps
         self.deadline = time.monotonic() + self.timeout_s
         self.steps = 0
+        self._lock = threading.Lock()  # retriever and classifier run in parallel
 
     def log(
         self, agent: str, kind: str, name: str, status: str = "ok", duration_ms: int | None = None, **payload
@@ -41,9 +45,10 @@ class Run:
         """
         if time.monotonic() > self.deadline:
             raise RunError("timed_out", f"run deadline of {self.timeout_s:.0f}s reached before {agent}.{name}")
-        self.steps += 1
-        if self.steps > self.max_steps:
-            raise RunError("failed", f"step budget of {self.max_steps} exceeded at {agent}.{name}")
+        with self._lock:
+            self.steps += 1
+            if self.steps > self.max_steps:
+                raise RunError("failed", f"step budget of {self.max_steps} exceeded at {agent}.{name}")
         started = time.monotonic()
         observation = nullcontext()
         if as_type:
@@ -65,8 +70,10 @@ class Run:
         return value
 
 
-def run_check(store: Store, claim: Claim, llm, speakers, get_model, source: str = "api") -> tuple[str, dict]:
-    """Check one claim with both agents and save the final status. Never raises."""
+def run_check(
+    store: Store, claim: Claim, llm, speakers, get_model, search, source: str = "api", link_checker=None
+) -> tuple[str, dict]:
+    """Check one claim with all agents and save the final status. Never raises."""
     run = Run(claim.run_id, store)
     store.set_status(claim.run_id, "running")
     trace_id = Langfuse.create_trace_id(seed=claim.run_id)
@@ -76,7 +83,7 @@ def run_check(store: Store, claim: Claim, llm, speakers, get_model, source: str 
         propagate_attributes(
             trace_name="fact_check",
             tags=[source],
-            metadata={"run_id": claim.run_id, "model": llm.model, "source": source},
+            metadata={"run_id": claim.run_id, "model": llm.model, "source": source, "search": search.backend},
         ),
         tracer.start_as_current_observation(
             as_type="span",
@@ -93,34 +100,33 @@ def run_check(store: Store, claim: Claim, llm, speakers, get_model, source: str 
             plan=list(STEPS),
             provider=llm.provider,
             model=llm.model,
+            search=search.backend,
             source=source,
             limits={
                 "run_timeout_s": run.timeout_s,
                 "max_steps": run.max_steps,
                 "llm_timeout_s": config.LLM_TIMEOUT_S,
                 "llm_max_retries": config.LLM_MAX_RETRIES,
+                "revise_rounds": 1,
             },
             trace_id=trace_id,
             trace_url=_trace_url(trace_id),
         )
         try:
-            analysis = _run_agent(run, Analyst(llm), claim)
-            result["analysis"] = analysis.model_dump()
-            prediction = _run_agent(run, Classifier(get_model, speakers), analysis)
-            result["prediction"] = prediction.model_dump()
+            _steps(run, result, claim, llm, speakers, get_model, search, link_checker)
         except RunError as run_error:
             status, error = run_error.status, run_error.reason
         except Exception as unexpected:  # provider errors, bugs: still a final status, never a hung run
             status, error = "failed", f"{type(unexpected).__name__}: {unexpected}"[:500]
-        prediction_dump = result.get("prediction", {})
+        draft = result.get("draft", {})
         root.update(
             output={
                 "status": status,
-                "label": prediction_dump.get("label"),
-                "confidence": prediction_dump.get("confidence"),
+                "verdict": draft.get("verdict"),
+                "confidence": draft.get("confidence"),
                 "error": error,
             },
-            level="ERROR" if error else "DEFAULT",
+            level="ERROR" if status in ("failed", "timed_out") else "DEFAULT",
             status_message=error,
         )
     store.finish_run(claim.run_id, status, result, error)
@@ -137,11 +143,51 @@ def run_check(store: Store, claim: Claim, llm, speakers, get_model, source: str 
     return status, result
 
 
-def _run_agent(run: Run, agent, message):
-    run.log("runner", "step", agent.id, "started", input=type(message).__name__)
-    with tracer.start_as_current_observation(as_type="agent", name=agent.id, input=message.model_dump()) as span:
+def _steps(run: Run, result: dict, claim: Claim, llm, speakers, get_model, search, link_checker) -> None:
+    analysis = _run_agent(run, Analyst(llm), claim)
+    result["analysis"] = analysis.model_dump()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:  # search and the local model do not depend on each other
+        evidence_future = pool.submit(copy_context().run, _run_agent, run, Retriever(search), analysis)
+        prediction_future = pool.submit(copy_context().run, _run_agent, run, Classifier(get_model, speakers), analysis)
+        prediction = prediction_future.result()
+        evidence = evidence_future.result()
+    result["prediction"] = prediction.model_dump()
+    result["evidence"] = evidence.model_dump()
+    if not evidence.items:
+        raise RunError("insufficient_evidence", evidence.note or "no sources found")
+
+    assessment = _run_agent(run, Assessor(llm), analysis, evidence)
+    result["assessment"] = assessment.model_dump()
+    verifier = Verifier(link_checker) if link_checker else Verifier()
+
+    draft = _run_agent(run, Synthesizer(llm), analysis, prediction, evidence, assessment)
+    result["draft"] = draft.model_dump()
+    verification = _run_agent(run, verifier, draft, evidence, assessment)
+    result["verification"] = verification.model_dump()
+    if verification.status == "revise":  # exactly one round of fixes, as the plan allows
+        draft = _run_agent(
+            run,
+            Synthesizer(llm, fixes=verification.required_fixes, revision=1),
+            analysis,
+            prediction,
+            evidence,
+            assessment,
+        )
+        result["draft"] = draft.model_dump()
+        verification = _run_agent(run, verifier, draft, evidence, assessment)
+        result["verification"] = verification.model_dump()
+        if verification.status == "revise":
+            raise RunError("failed", "verifier rejected the verdict twice: " + "; ".join(verification.required_fixes))
+
+
+def _run_agent(run: Run, agent, *messages):
+    run.log("runner", "step", agent.id, "started", input=[type(m).__name__ for m in messages])
+    with tracer.start_as_current_observation(
+        as_type="agent", name=agent.id, input=[m.model_dump() for m in messages]
+    ) as span:
         try:
-            output = agent.run(run, message)
+            output = agent.run(run, *messages)
         except Exception as error:
             span.update(level="ERROR", status_message=str(error)[:500])
             run.log("runner", "step", agent.id, "error")
